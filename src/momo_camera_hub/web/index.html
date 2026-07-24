@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7f7">
+  <title>MOMO Camera Hub</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='10' y='10' width='34' height='34' rx='7' fill='none' stroke='%23087f8c' stroke-width='8'/%3E%3Cpath d='M40 40h14v14H40z' fill='%2317a673'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css?v=20260724-2">
+  <script defer src="/vendor/lucide.min.js?v=0.468.0"></script>
+  <script defer src="/app.js?v=20260724-2"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="MOMO Camera Hub 首页">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>MOMO Camera Hub</span>
+    </a>
+    <div class="top-status" aria-label="设备状态">
+      <span class="status-item"><span id="onlineDot" class="status-dot"></span><span id="cameraState">连接中</span></span>
+      <span class="status-item"><span class="status-label">画面</span><strong id="formatState">--</strong></span>
+      <span class="status-item"><span class="status-label">磁盘</span><strong id="diskState">--</strong></span>
+    </div>
+    <a id="controlLink" class="control-link" href="http://localhost:8010/web/" target="_blank" rel="noreferrer">机械臂控制台</a>
+  </header>
+
+  <main>
+    <section class="monitor" aria-label="实时画面">
+      <div class="video-shell">
+        <iframe id="liveFrame" title="机械臂摄像头实时画面" allow="autoplay; fullscreen; picture-in-picture"></iframe>
+        <div id="videoOffline" class="video-offline" hidden>
+          <span class="offline-icon" aria-hidden="true"></span>
+          <strong>摄像头暂时离线</strong>
+          <span id="offlineMessage">正在等待重新连接</span>
+        </div>
+        <span class="live-indicator"><span></span>LIVE</span>
+      </div>
+
+      <div class="capture-controls">
+        <button id="snapshotButton" class="command-button" type="button">
+          <i data-lucide="camera" aria-hidden="true"></i>
+          <span>拍照</span>
+        </button>
+        <button id="recordButton" class="command-button record-button" type="button">
+          <i id="recordIcon" data-lucide="circle" aria-hidden="true"></i>
+          <span id="recordLabel">开始录像</span>
+        </button>
+        <div class="record-timer" aria-live="polite">
+          <span id="recordPulse" class="record-pulse"></span>
+          <span id="recordTime">00:00:00</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="library" aria-labelledby="libraryTitle">
+      <div class="library-header">
+        <div>
+          <h1 id="libraryTitle">本地媒体库</h1>
+          <p id="librarySummary">照片和录像保存在当前主机</p>
+        </div>
+        <button id="refreshButton" class="icon-button" type="button" title="刷新媒体库" aria-label="刷新媒体库">
+          <i data-lucide="refresh-cw" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="tabs" role="tablist" aria-label="媒体类型">
+        <button class="tab active" data-type="" role="tab" aria-selected="true">全部</button>
+        <button class="tab" data-type="snapshot" role="tab" aria-selected="false">照片</button>
+        <button class="tab" data-type="recording" role="tab" aria-selected="false">录像</button>
+      </div>
+      <div id="mediaGrid" class="media-grid" aria-live="polite"></div>
+      <div id="emptyState" class="empty-state" hidden>
+        <i data-lucide="images" aria-hidden="true"></i>
+        <strong>还没有媒体文件</strong>
+        <span>拍一张照片或开始一段录像</span>
+      </div>
+      <button id="loadMoreButton" class="load-more" type="button" hidden>加载更多</button>
+    </section>
+  </main>
+
+  <dialog id="mediaDialog" class="media-dialog">
+    <div class="dialog-toolbar">
+      <strong id="dialogTitle">媒体预览</strong>
+      <div>
+        <a id="dialogDownload" class="icon-button" title="下载" aria-label="下载">
+          <i data-lucide="download" aria-hidden="true"></i>
+        </a>
+        <button id="dialogClose" class="icon-button" type="button" title="关闭" aria-label="关闭">
+          <i data-lucide="x" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+    <div id="dialogContent" class="dialog-content"></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,34 @@
+camera:
+  backend: opencv
+  device: OsmoPocket3
+  index: 0
+  width: 1920
+  height: 1080
+  fps: 30
+  rotation: 0
+  pixel_format: nv12
+
+encoder:
+  implementation: h264_videotoolbox
+  bitrate: 6M
+  keyframe_interval: 30
+
+stream:
+  path: armcam
+  rtsp_port: 8554
+  hls_port: 8888
+  webrtc_port: 8889
+  webrtc_udp_port: 8189
+  api_port: 9997
+  mediamtx_binary: ~/.local/bin/mediamtx
+
+server:
+  host: 0.0.0.0
+  port: 8020
+
+storage:
+  root: ~/MOMO-Camera-Data
+  minimum_free_gib: 5
+
+ffmpeg_binary: ffmpeg
+ffprobe_binary: ffprobe

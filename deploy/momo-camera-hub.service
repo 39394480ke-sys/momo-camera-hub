@@ -1,0 +1,20 @@
+[Unit]
+Description=MOMO Camera Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fibo
+Group=fibo
+WorkingDirectory=/opt/momo-camera-hub
+ExecStart=/opt/momo-camera-hub/.venv/bin/momo-camera-hub --config /etc/momo-camera-hub/config.yaml
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

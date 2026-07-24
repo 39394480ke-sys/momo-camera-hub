@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+runtime/
+data/
+config.local.yaml
+mediamtx
+mediamtx.yml
+auto.crt
+auto.key
