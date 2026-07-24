@@ -35,7 +35,13 @@ def test_default_linux_config_uses_v4l2_and_system_storage() -> None:
 def test_local_yaml_deep_merges_without_losing_defaults(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
-        "camera:\n  width: 1280\nstorage:\n  minimum_free_gib: 2\nstream:\n  mediamtx_binary: ~/.local/bin/mediamtx\n",
+        "camera:\n"
+        "  width: 1280\n"
+        "storage:\n"
+        "  root: ./output\n"
+        "  minimum_free_gib: 2\n"
+        "stream:\n"
+        "  mediamtx_binary: ~/.local/bin/mediamtx\n",
         encoding="utf-8",
     )
 
@@ -45,6 +51,7 @@ def test_local_yaml_deep_merges_without_losing_defaults(tmp_path: Path) -> None:
     assert config.camera.height == 1080
     assert config.camera.device == "OsmoPocket3"
     assert config.storage.minimum_free_gib == 2
+    assert config.storage.root == tmp_path / "output"
     assert config.stream.mediamtx_binary == "/Users/test/.local/bin/mediamtx"
 
 

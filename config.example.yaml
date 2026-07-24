@@ -27,7 +27,7 @@ server:
   port: 8020
 
 storage:
-  root: ~/MOMO-Camera-Data
+  root: ./output
   minimum_free_gib: 5
 
 ffmpeg_binary: ffmpeg

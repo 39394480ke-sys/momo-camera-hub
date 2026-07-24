@@ -127,13 +127,15 @@ def load_config(
     config = AppConfig.default(platform_name=platform_name, home=user_home)
     if path is None:
         return config
-    config_path = Path(path).expanduser()
+    config_path = Path(path).expanduser().resolve()
     if not config_path.exists():
         raise FileNotFoundError(f"configuration file not found: {config_path}")
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     if not isinstance(payload, dict):
         raise ValueError("configuration root must be a mapping")
     merged = _merge_dataclass(config, payload)
+    if not merged.storage.root.is_absolute():
+        merged.storage.root = (config_path.parent / merged.storage.root).resolve()
     if merged.stream.mediamtx_binary.startswith("~/"):
         merged.stream.mediamtx_binary = str(user_home / merged.stream.mediamtx_binary[2:])
     return merged

@@ -43,7 +43,9 @@ uv run momo-camera-hub --config config.local.yaml
 http://your-mac.local:8020/
 ```
 
-录像和照片默认保存在 `~/MOMO-Camera-Data/`，不会进入这个位于 iCloud 的 Git 仓库。
+录像和照片默认保存在仓库内的 `output/`。该目录只提交自身的 `.gitignore`，
+照片、录像、缩略图和元数据不会进入 Git 仓库。
+`.gitignore` 只阻止 Git 跟踪；由于当前仓库位于 iCloud Drive，媒体仍可能被 iCloud 同步。
 
 ## 摄像头探测
 
