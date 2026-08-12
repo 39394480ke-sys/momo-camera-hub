@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .cameras import CameraDevice
 from .config import AppConfig
 from .ffmpeg import (
     build_capture_command,
@@ -189,13 +190,18 @@ class StreamSupervisor:
         self.viewer_count = 0
         self.capture_started_at: float | None = None
         self.actual_stream: dict[str, Any] | None = None
+        self._capture_lock = asyncio.Lock()
 
     async def start(self) -> None:
         self._check_dependencies()
         mediamtx_config = render_mediamtx_config(self.config, self.runtime_dir)
         self.mediamtx_process = await self._spawn([self.config.stream.mediamtx_binary, str(mediamtx_config)])
         await self._wait_for_port("127.0.0.1", self.config.stream.rtsp_port, timeout=10)
-        await self._start_capture()
+        try:
+            await self._start_capture()
+        except Exception as exc:
+            self.capture_process = None
+            self.last_error = str(exc)
         self.watch_task = asyncio.create_task(self._watch_capture(), name="camera-capture-watchdog")
         self.viewer_task = asyncio.create_task(self._watch_viewers(), name="stream-viewer-counter")
 
@@ -211,6 +217,36 @@ class StreamSupervisor:
         await self._terminate(self.mediamtx_process)
         self.capture_process = None
         self.mediamtx_process = None
+
+    async def select_camera(self, camera: CameraDevice) -> None:
+        async with self._capture_lock:
+            previous = (
+                self.config.camera.backend,
+                self.config.camera.device,
+                self.config.camera.index,
+            )
+            previous_process = self.capture_process
+            self.capture_process = None
+            await self._terminate(previous_process)
+            self.config.camera.backend = camera.backend
+            self.config.camera.device = camera.device
+            self.config.camera.index = camera.index
+            self.actual_stream = None
+            try:
+                await self._start_capture()
+            except Exception as selection_error:
+                self.config.camera.backend, self.config.camera.device, self.config.camera.index = previous
+                self.capture_process = None
+                try:
+                    await self._start_capture()
+                except Exception as restore_error:
+                    self.capture_process = None
+                    self.last_error = f"camera selection failed: {selection_error}; restore failed: {restore_error}"
+                else:
+                    self.last_error = f"camera selection failed: {selection_error}"
+                raise CommandError(f"could not switch to {camera.name}: {selection_error}") from selection_error
+            self.capture_restarts += 1
+            self.last_error = ""
 
     def status(self) -> dict[str, Any]:
         return {
@@ -259,21 +295,38 @@ class StreamSupervisor:
         while not self.stopping:
             process = self.capture_process
             if not process:
-                return
+                await asyncio.sleep(delay)
+                async with self._capture_lock:
+                    if self.capture_process is not None or self.stopping:
+                        continue
+                    try:
+                        await self._start_capture()
+                        delay = 1.0
+                        self.last_error = ""
+                    except Exception as exc:
+                        self.capture_process = None
+                        self.last_error = str(exc)
+                        delay = min(delay * 2, 30)
+                continue
             stderr = await process.stderr.read() if process.stderr else b""
             await process.wait()
             if self.stopping:
                 return
-            self.last_error = stderr.decode(errors="replace").strip()[-1000:] or "camera capture stopped"
-            self.capture_restarts += 1
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 30)
-            try:
-                await self._start_capture()
-                delay = 1.0
-                self.last_error = ""
-            except Exception as exc:
-                self.last_error = str(exc)
+            async with self._capture_lock:
+                if process is not self.capture_process:
+                    continue
+                self.capture_process = None
+                self.last_error = stderr.decode(errors="replace").strip()[-1000:] or "camera capture stopped"
+                self.capture_restarts += 1
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+                try:
+                    await self._start_capture()
+                    delay = 1.0
+                    self.last_error = ""
+                except Exception as exc:
+                    self.capture_process = None
+                    self.last_error = str(exc)
 
     def _check_dependencies(self) -> None:
         missing = [

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from .cameras import CameraDevice, CameraSelectionStore
 from .config import AppConfig
 from .media import MediaRecord, MediaStore
 
@@ -20,6 +21,10 @@ class NotRecordingError(RuntimeError):
 
 
 class InsufficientStorageError(RuntimeError):
+    pass
+
+
+class CameraBusyError(RuntimeError):
     pass
 
 
@@ -118,6 +123,24 @@ class CameraHubService:
 
     def recording_status(self) -> MediaRecord | None:
         return self._active_recording
+
+    async def select_camera(
+        self,
+        camera: CameraDevice,
+        *,
+        selection_store: CameraSelectionStore | None = None,
+    ) -> None:
+        async with self._lock:
+            if self._active_recording is not None:
+                raise CameraBusyError("stop the active recording before switching cameras")
+            if self.stream_supervisor is None:
+                self.config.camera.backend = camera.backend
+                self.config.camera.device = camera.device
+                self.config.camera.index = camera.index
+            else:
+                await self.stream_supervisor.select_camera(camera)
+            if selection_store is not None:
+                selection_store.save(self.config.camera)
 
     def status(self) -> dict[str, Any]:
         disk = shutil.disk_usage(self.config.storage.root)

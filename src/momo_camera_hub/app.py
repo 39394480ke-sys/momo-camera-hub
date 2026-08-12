@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -7,12 +9,15 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 
+from .cameras import CameraDevice, CameraSelectionStore, discover_cameras, resolve_configured_camera
 from .config import AppConfig
 from .media import MediaNotFoundError, MediaStore
 from .runtime import FFmpegMediaRunner, StreamSupervisor
 from .service import (
     AlreadyRecordingError,
+    CameraBusyError,
     CameraHubService,
     InsufficientStorageError,
     NotRecordingError,
@@ -21,12 +26,25 @@ from .service import (
 WEB_ROOT = Path(__file__).parent / "web"
 
 
+class CameraSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=256)
+
+
 def create_app(
     config: AppConfig,
     *,
     service: CameraHubService | None = None,
     manage_runtime: bool = True,
+    camera_discovery: Callable[[], list[CameraDevice]] | None = None,
+    selection_store: CameraSelectionStore | None = None,
 ) -> FastAPI:
+    selection_store = selection_store or CameraSelectionStore(config.storage.root / ".camera-selection.json")
+    selection_store.apply(config.camera)
+    camera_discovery = camera_discovery or (
+        lambda: discover_cameras(config.camera, ffmpeg_binary=config.ffmpeg_binary)
+    )
     store = MediaStore(config.storage.root)
     runner = FFmpegMediaRunner(config)
     supervisor = StreamSupervisor(config)
@@ -36,6 +54,8 @@ def create_app(
     async def lifespan(_: FastAPI):
         try:
             if manage_runtime:
+                devices = await asyncio.to_thread(camera_discovery)
+                resolve_configured_camera(config.camera, devices)
                 await supervisor.start()
                 await hub.recover_interrupted()
             yield
@@ -50,6 +70,35 @@ def create_app(
     @app.get("/api/v1/status")
     async def status() -> dict[str, Any]:
         return hub.status()
+
+    @app.get("/api/v1/cameras")
+    async def camera_list() -> dict[str, Any]:
+        try:
+            devices = await asyncio.to_thread(camera_discovery)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"could not list cameras: {exc}") from exc
+        selected = resolve_configured_camera(config.camera, devices)
+        return {
+            "items": [item.public_dict(selected=item.id == selected.id if selected else False) for item in devices],
+            "selected_id": selected.id if selected else None,
+        }
+
+    @app.put("/api/v1/camera")
+    async def camera_select(request: CameraSelectionRequest) -> dict[str, Any]:
+        try:
+            devices = await asyncio.to_thread(camera_discovery)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"could not list cameras: {exc}") from exc
+        selected = next((item for item in devices if item.id == request.id), None)
+        if selected is None:
+            raise HTTPException(status_code=404, detail="camera is no longer available")
+        try:
+            await hub.select_camera(selected, selection_store=selection_store)
+        except CameraBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return selected.public_dict(selected=True)
 
     @app.post("/api/v1/snapshots", status_code=201)
     async def snapshot() -> dict[str, Any]:

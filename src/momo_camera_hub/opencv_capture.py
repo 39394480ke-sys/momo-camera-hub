@@ -81,6 +81,30 @@ def rotate_frame(frame, degrees: int):
     raise ValueError("rotation must be one of 0, 90, 180, or 270")
 
 
+def fit_frame(frame, width: int, height: int):
+    """Fit a camera frame into the configured stream without distorting it."""
+    source_height, source_width = frame.shape[:2]
+    if (source_width, source_height) == (width, height):
+        return frame
+
+    scale = min(width / source_width, height / source_height)
+    resized_width = max(1, round(source_width * scale))
+    resized_height = max(1, round(source_height * scale))
+    interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+    resized = cv2.resize(frame, (resized_width, resized_height), interpolation=interpolation)
+    horizontal_padding = width - resized_width
+    vertical_padding = height - resized_height
+    return cv2.copyMakeBorder(
+        resized,
+        vertical_padding // 2,
+        vertical_padding - vertical_padding // 2,
+        horizontal_padding // 2,
+        horizontal_padding - horizontal_padding // 2,
+        cv2.BORDER_CONSTANT,
+        value=(0, 0, 0),
+    )
+
+
 def run(args: argparse.Namespace) -> int:
     capture = cv2.VideoCapture(args.camera_index, cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY)
     if not capture.isOpened():
@@ -97,16 +121,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"camera index {args.camera_index} opened but returned no frame", file=sys.stderr, flush=True)
         return 3
     frame = rotate_frame(frame, args.rotation)
-    actual_height, actual_width = frame.shape[:2]
-    if (actual_width, actual_height) != (args.width, args.height):
-        capture.release()
-        print(
-            f"camera produced {actual_width}x{actual_height}, expected {args.width}x{args.height}; "
-            "adjust camera.rotation or dimensions",
-            file=sys.stderr,
-            flush=True,
-        )
-        return 4
+    frame = fit_frame(frame, args.width, args.height)
 
     command = build_rawvideo_encoder_command(
         ffmpeg_binary=args.ffmpeg_binary,
@@ -143,6 +158,7 @@ def run(args: argparse.Namespace) -> int:
                 print("camera frame read failed", file=sys.stderr, flush=True)
                 return 6
             frame = rotate_frame(frame, args.rotation)
+            frame = fit_frame(frame, args.width, args.height)
         return 0
     finally:
         capture.release()

@@ -4,17 +4,22 @@ const state = {
   cursor: null,
   loading: false,
   recordingStartedAt: null,
+  cameras: [],
+  selectedCameraId: null,
+  switchingCamera: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 function init() {
+  refreshLiveFrame();
   const streamHost = window.location.hostname || "127.0.0.1";
-  $("#liveFrame").src = `http://${streamHost}:8889/armcam?controls=false&muted=true&autoplay=true&playsInline=true`;
   const controlLink = $("#controlLink");
   if (controlLink) controlLink.href = `http://${streamHost}:8010/web/`;
 
+  $("#cameraSelect").addEventListener("change", selectCamera);
+  $("#cameraRefreshButton").addEventListener("click", loadCameras);
   $("#snapshotButton").addEventListener("click", takeSnapshot);
   $("#recordButton").addEventListener("click", toggleRecording);
   $("#refreshButton").addEventListener("click", () => loadMedia(true));
@@ -36,6 +41,7 @@ function init() {
   });
 
   window.lucide?.createIcons();
+  loadCameras();
   refreshStatus();
   loadMedia(true);
   setInterval(refreshStatus, 1000);
@@ -72,7 +78,8 @@ async function refreshStatus() {
 function renderStatus(data) {
   const online = Boolean(data.camera?.online);
   $("#onlineDot").classList.toggle("online", online);
-  $("#cameraState").textContent = online ? "摄像头在线" : "摄像头离线";
+  const cameraName = data.camera?.device || "摄像头";
+  $("#cameraState").textContent = online ? `${cameraName} 在线` : `${cameraName} 离线`;
   $("#formatState").textContent = `${data.camera.width} × ${data.camera.height} · ${formatFps(data.camera.fps)} FPS`;
   $("#diskState").textContent = `${formatBytes(data.storage.free_bytes)} 可用`;
   $("#videoOffline").hidden = online;
@@ -85,6 +92,8 @@ function renderStatus(data) {
   $("#recordLabel").textContent = active ? "停止录像" : "开始录像";
   $("#recordIcon").setAttribute("data-lucide", active ? "square" : "circle");
   $(".record-timer").classList.toggle("active", active);
+  $("#cameraSelect").disabled = active || state.switchingCamera;
+  $("#cameraRefreshButton").disabled = state.switchingCamera;
   window.lucide?.createIcons();
 }
 
@@ -93,6 +102,80 @@ function renderOffline(message) {
   $("#cameraState").textContent = "服务离线";
   $("#videoOffline").hidden = false;
   $("#offlineMessage").textContent = message;
+}
+
+function refreshLiveFrame() {
+  const streamHost = window.location.hostname || "127.0.0.1";
+  const query = new URLSearchParams({
+    controls: "false",
+    muted: "true",
+    autoplay: "true",
+    playsInline: "true",
+    stream: String(Date.now()),
+  });
+  $("#liveFrame").src = `http://${streamHost}:8889/armcam?${query}`;
+}
+
+async function loadCameras() {
+  const select = $("#cameraSelect");
+  const refresh = $("#cameraRefreshButton");
+  refresh.disabled = true;
+  try {
+    const payload = await api("/api/v1/cameras");
+    state.cameras = payload.items || [];
+    state.selectedCameraId = payload.selected_id || null;
+    select.replaceChildren();
+    if (!state.cameras.length) {
+      const option = new Option("没有检测到摄像头", "");
+      select.append(option);
+      select.disabled = true;
+      return;
+    }
+    state.cameras.forEach((camera) => {
+      const option = new Option(camera.name, camera.id);
+      option.selected = camera.id === state.selectedCameraId;
+      select.append(option);
+    });
+    select.disabled = Boolean(state.status?.recording?.active) || state.switchingCamera;
+  } catch (error) {
+    select.replaceChildren(new Option("读取摄像头失败", ""));
+    select.disabled = true;
+    toast(error.message, true);
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
+async function selectCamera(event) {
+  const select = event.currentTarget;
+  const cameraId = select.value;
+  if (!cameraId || cameraId === state.selectedCameraId) return;
+  state.switchingCamera = true;
+  select.disabled = true;
+  $("#cameraRefreshButton").disabled = true;
+  $("#snapshotButton").disabled = true;
+  $("#recordButton").disabled = true;
+  try {
+    const selected = await api("/api/v1/camera", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: cameraId }),
+    });
+    state.selectedCameraId = selected.id;
+    toast(`已切换到 ${selected.name}`);
+    refreshLiveFrame();
+    await refreshStatus();
+    await loadCameras();
+  } catch (error) {
+    select.value = state.selectedCameraId || "";
+    toast(error.message, true);
+  } finally {
+    state.switchingCamera = false;
+    $("#snapshotButton").disabled = false;
+    $("#recordButton").disabled = false;
+    $("#cameraRefreshButton").disabled = false;
+    select.disabled = Boolean(state.status?.recording?.active);
+  }
 }
 
 function renderTimer() {

@@ -6,9 +6,9 @@
   <meta name="theme-color" content="#f5f7f7">
   <title>MOMO Camera Hub</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='10' y='10' width='34' height='34' rx='7' fill='none' stroke='%23087f8c' stroke-width='8'/%3E%3Cpath d='M40 40h14v14H40z' fill='%2317a673'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260724-2">
+  <link rel="stylesheet" href="/styles.css?v=20260812-1">
   <script defer src="/vendor/lucide.min.js?v=0.468.0"></script>
-  <script defer src="/app.js?v=20260724-2"></script>
+  <script defer src="/app.js?v=20260812-1"></script>
 </head>
 <body>
   <header class="topbar">
@@ -26,6 +26,18 @@
 
   <main>
     <section class="monitor" aria-label="实时画面">
+      <div class="monitor-toolbar">
+        <label class="camera-picker" for="cameraSelect">
+          <i data-lucide="video" aria-hidden="true"></i>
+          <span>摄像头</span>
+          <select id="cameraSelect" aria-label="选择摄像头">
+            <option value="">正在读取设备</option>
+          </select>
+        </label>
+        <button id="cameraRefreshButton" class="icon-button" type="button" title="重新扫描摄像头" aria-label="重新扫描摄像头">
+          <i data-lucide="refresh-cw" aria-hidden="true"></i>
+        </button>
+      </div>
       <div class="video-shell">
         <iframe id="liveFrame" title="机械臂摄像头实时画面" allow="autoplay; fullscreen; picture-in-picture"></iframe>
         <div id="videoOffline" class="video-offline" hidden>

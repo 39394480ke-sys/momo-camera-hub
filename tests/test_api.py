@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from momo_camera_hub.app import create_app
+from momo_camera_hub.cameras import CameraDevice, CameraSelectionStore
 from momo_camera_hub.config import AppConfig
 from momo_camera_hub.media import MediaStore
 from momo_camera_hub.service import CameraHubService
@@ -60,3 +61,55 @@ def test_static_app_is_served(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert "MOMO Camera Hub" in response.text
+
+
+def test_camera_can_be_selected_and_persisted(tmp_path: Path) -> None:
+    config = AppConfig.default(platform_name="Darwin", home=tmp_path)
+    config.storage.root = tmp_path / "media"
+    config.storage.minimum_free_gib = 0
+    selection_store = CameraSelectionStore(tmp_path / "selection.json")
+    devices = [
+        CameraDevice("opencv:0", "MacBook Air相机", "opencv", "MacBook Air相机", 0),
+        CameraDevice("opencv:1", "OsmoPocket3", "opencv", "OsmoPocket3", 1),
+    ]
+    service = CameraHubService(config, MediaStore(config.storage.root), FakeRunner())
+    app = create_app(
+        config,
+        service=service,
+        manage_runtime=False,
+        camera_discovery=lambda: devices,
+        selection_store=selection_store,
+    )
+
+    with TestClient(app) as client:
+        listed = client.get("/api/v1/cameras")
+        selected = client.put("/api/v1/camera", json={"id": "opencv:1"})
+        status = client.get("/api/v1/status")
+
+    assert listed.status_code == 200
+    assert [item["name"] for item in listed.json()["items"]] == ["MacBook Air相机", "OsmoPocket3"]
+    assert selected.status_code == 200
+    assert selected.json()["name"] == "OsmoPocket3"
+    assert status.json()["camera"]["device"] == "OsmoPocket3"
+    assert selection_store.load() == {"backend": "opencv", "device": "OsmoPocket3", "index": 1}
+
+
+def test_camera_switch_is_rejected_while_recording(tmp_path: Path) -> None:
+    config = AppConfig.default(platform_name="Darwin", home=tmp_path)
+    config.storage.root = tmp_path / "media"
+    config.storage.minimum_free_gib = 0
+    devices = [CameraDevice("opencv:1", "OsmoPocket3", "opencv", "OsmoPocket3", 1)]
+    service = CameraHubService(config, MediaStore(config.storage.root), FakeRunner())
+    app = create_app(
+        config,
+        service=service,
+        manage_runtime=False,
+        camera_discovery=lambda: devices,
+    )
+
+    with TestClient(app) as client:
+        assert client.post("/api/v1/recordings/start").status_code == 201
+        response = client.put("/api/v1/camera", json={"id": "opencv:1"})
+        client.post("/api/v1/recordings/stop")
+
+    assert response.status_code == 409

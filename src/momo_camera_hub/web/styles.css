@@ -119,6 +119,44 @@ main {
   padding: 18px 24px 0;
 }
 
+.monitor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  width: min(100%, calc((100vh - 190px) * 16 / 9));
+  margin: 0 auto 10px;
+}
+
+.camera-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.camera-picker svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.8;
+}
+
+.camera-picker select {
+  min-width: 220px;
+  height: 38px;
+  padding: 0 34px 0 11px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--strong-line);
+  border-radius: 5px;
+  font: inherit;
+}
+
+.camera-picker select:disabled {
+  opacity: 0.6;
+}
+
 .video-shell {
   position: relative;
   overflow: hidden;
@@ -563,6 +601,20 @@ main {
 
   .monitor {
     padding: 12px 12px 0;
+  }
+
+  .monitor-toolbar {
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .camera-picker {
+    flex: 1;
+  }
+
+  .camera-picker select {
+    min-width: 0;
+    width: 100%;
   }
 
   .video-shell {
