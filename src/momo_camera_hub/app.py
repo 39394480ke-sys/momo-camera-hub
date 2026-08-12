@@ -140,6 +140,10 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"items": [item.public_dict() for item in page.items], "next_cursor": page.next_cursor}
 
+    @app.get("/api/v1/media/{media_id}")
+    async def media_detail(media_id: str) -> dict[str, Any]:
+        return _get_ready_media(hub.store, media_id).public_dict()
+
     @app.get("/api/v1/media/{media_id}/content")
     async def media_content(media_id: str, download: bool = False) -> FileResponse:
         record = _get_ready_media(hub.store, media_id)

@@ -48,10 +48,13 @@ def test_snapshot_content_and_media_listing(tmp_path: Path) -> None:
         snapshot = client.post("/api/v1/snapshots")
         media = client.get("/api/v1/media", params={"type": "snapshot"})
         media_id = snapshot.json()["id"]
+        detail = client.get(f"/api/v1/media/{media_id}")
         content = client.get(f"/api/v1/media/{media_id}/content")
 
     assert snapshot.status_code == 201
     assert media.json()["items"][0]["id"] == media_id
+    assert detail.status_code == 200
+    assert detail.json()["id"] == media_id
     assert content.content == b"jpeg"
 
 

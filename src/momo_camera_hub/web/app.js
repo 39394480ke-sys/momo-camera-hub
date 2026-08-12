@@ -16,7 +16,7 @@ function init() {
   refreshLiveFrame();
   const streamHost = window.location.hostname || "127.0.0.1";
   const controlLink = $("#controlLink");
-  if (controlLink) controlLink.href = `http://${streamHost}:8010/web/`;
+  if (controlLink) controlLink.href = `http://${streamHost}:8110/`;
 
   $("#cameraSelect").addEventListener("change", selectCamera);
   $("#cameraRefreshButton").addEventListener("click", loadCameras);
@@ -44,6 +44,7 @@ function init() {
   loadCameras();
   refreshStatus();
   loadMedia(true);
+  openRequestedMedia();
   setInterval(refreshStatus, 1000);
   setInterval(renderTimer, 250);
 }
@@ -238,6 +239,17 @@ async function loadMedia(reset) {
   } finally {
     state.loading = false;
     $("#refreshButton").disabled = false;
+  }
+}
+
+async function openRequestedMedia() {
+  const mediaId = new URLSearchParams(window.location.search).get("media");
+  if (!mediaId) return;
+  try {
+    const item = await api(`/api/v1/media/${encodeURIComponent(mediaId)}`);
+    openMedia(item);
+  } catch (error) {
+    toast(`无法打开指定录像：${error.message}`, true);
   }
 }
 
