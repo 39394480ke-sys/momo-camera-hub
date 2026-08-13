@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -30,6 +34,19 @@ class CameraSelectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, max_length=256)
+
+
+class VisionTargetSelectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    w: int = Field(ge=1)
+    h: int = Field(ge=1)
+
+
+class VisionProxyError(RuntimeError):
+    """Raised when Camera Hub cannot obtain a valid response from vision."""
 
 
 def create_app(
@@ -66,6 +83,27 @@ def create_app(
 
     app = FastAPI(title="MOMO Camera Hub", version="0.0.0", lifespan=lifespan)
     app.state.hub = hub
+    vision_config = getattr(config, "vision", None)
+    vision_base_url = _validated_vision_base_url(
+        str(getattr(vision_config, "base_url", "http://127.0.0.1:8000"))
+    )
+
+    async def vision_json(
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                _request_vision_json,
+                vision_base_url,
+                path,
+                method=method,
+                payload=payload,
+            )
+        except VisionProxyError as exc:
+            raise HTTPException(status_code=503, detail=f"视觉服务不可用：{exc}") from exc
 
     @app.get("/api/v1/status")
     async def status() -> dict[str, Any]:
@@ -99,6 +137,30 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return selected.public_dict(selected=True)
+
+    @app.get("/api/v1/vision/health")
+    async def vision_health() -> dict[str, Any]:
+        return await vision_json("/health")
+
+    @app.get("/api/v1/vision/latest")
+    async def vision_latest() -> dict[str, Any]:
+        return await vision_json("/latest")
+
+    @app.get("/api/v1/vision/status")
+    async def vision_status() -> dict[str, Any]:
+        return await vision_json("/status")
+
+    @app.get("/api/v1/vision/target/state")
+    async def vision_target_state() -> dict[str, Any]:
+        return await vision_json("/target/state")
+
+    @app.post("/api/v1/vision/target/select")
+    async def vision_target_select(request: VisionTargetSelectRequest) -> dict[str, Any]:
+        return await vision_json("/target/select", method="POST", payload=request.model_dump())
+
+    @app.post("/api/v1/vision/target/reset")
+    async def vision_target_reset() -> dict[str, Any]:
+        return await vision_json("/target/reset", method="POST", payload={})
 
     @app.post("/api/v1/snapshots", status_code=201)
     async def snapshot() -> dict[str, Any]:
@@ -173,3 +235,57 @@ def _get_ready_media(store: MediaStore, media_id: str):
     if record.status != "ready" or not record.content_path.exists():
         raise HTTPException(status_code=404, detail="media not ready")
     return record
+
+
+def _request_vision_json(
+    base_url: str,
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: float = 1.5,
+) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        data=body,
+        method=method,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = _vision_error_detail(exc.read())
+        suffix = f"：{detail}" if detail else ""
+        raise VisionProxyError(f"上游返回 HTTP {exc.code}{suffix}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise VisionProxyError(str(reason)) from exc
+
+    try:
+        result = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise VisionProxyError("上游返回了无效 JSON") from exc
+    if not isinstance(result, dict):
+        raise VisionProxyError("上游返回值不是 JSON 对象")
+    return result
+
+
+def _validated_vision_base_url(base_url: str) -> str:
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("vision base URL must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("vision base URL cannot contain credentials, a query, or a fragment")
+    return base_url.rstrip("/")
+
+
+def _vision_error_detail(raw: bytes) -> str:
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("detail") or payload.get("message") or "")

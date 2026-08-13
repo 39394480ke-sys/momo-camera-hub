@@ -21,6 +21,18 @@ stream:
   api_port: 9997
   mediamtx_binary: /usr/local/bin/mediamtx
 
+analysis_stream:
+  enabled: true
+  path: armcam-analysis
+  width: 640
+  height: 360
+  fps: 30
+  bitrate: 1M
+  keyframe_interval: 30
+
+vision:
+  base_url: http://127.0.0.1:8000
+
 server:
   host: 0.0.0.0
   port: 8020

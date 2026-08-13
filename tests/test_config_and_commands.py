@@ -22,6 +22,12 @@ def test_default_macos_config_uses_external_storage() -> None:
     assert config.camera.index == 0
     assert config.storage.root == Path("/Users/test/MOMO-Camera-Data")
     assert config.server.port == 8020
+    assert config.analysis_stream.enabled is True
+    assert (config.analysis_stream.width, config.analysis_stream.height) == (640, 360)
+    assert config.analysis_stream.fps == 30
+    assert config.analysis_stream.bitrate == "1M"
+    assert config.analysis_rtsp_url == "rtsp://127.0.0.1:8554/armcam-analysis"
+    assert config.vision.base_url == "http://127.0.0.1:8000"
 
 
 def test_default_linux_config_uses_v4l2_and_system_storage() -> None:
@@ -41,7 +47,11 @@ def test_local_yaml_deep_merges_without_losing_defaults(tmp_path: Path) -> None:
         "  root: ./output\n"
         "  minimum_free_gib: 2\n"
         "stream:\n"
-        "  mediamtx_binary: ~/.local/bin/mediamtx\n",
+        "  mediamtx_binary: ~/.local/bin/mediamtx\n"
+        "analysis_stream:\n"
+        "  width: 512\n"
+        "vision:\n"
+        "  base_url: http://127.0.0.1:9000/\n",
         encoding="utf-8",
     )
 
@@ -53,6 +63,9 @@ def test_local_yaml_deep_merges_without_losing_defaults(tmp_path: Path) -> None:
     assert config.storage.minimum_free_gib == 2
     assert config.storage.root == tmp_path / "output"
     assert config.stream.mediamtx_binary == "/Users/test/.local/bin/mediamtx"
+    assert config.analysis_stream.width == 512
+    assert config.analysis_stream.height == 360
+    assert config.vision.base_url == "http://127.0.0.1:9000"
 
 
 @pytest.mark.parametrize(
@@ -75,7 +88,10 @@ def test_macos_capture_command_publishes_browser_safe_h264() -> None:
 
     assert command[1:4] == ["-m", "momo_camera_hub.opencv_capture", "--camera-index"]
     assert command[4] == "0"
-    assert command[-1] == "rtsp://127.0.0.1:8554/armcam"
+    assert command[command.index("--rtsp-url") + 1] == "rtsp://127.0.0.1:8554/armcam"
+    assert command[command.index("--analysis-rtsp-url") + 1] == "rtsp://127.0.0.1:8554/armcam-analysis"
+    assert command[command.index("--analysis-width") + 1] == "640"
+    assert command[command.index("--analysis-bitrate") + 1] == "1M"
 
 
 def test_opencv_bridge_encodes_bgr_frames_with_declared_output_size() -> None:
@@ -88,12 +104,21 @@ def test_opencv_bridge_encodes_bgr_frames_with_declared_output_size() -> None:
         bitrate="6M",
         keyframe_interval=30,
         rtsp_url="rtsp://127.0.0.1:8554/armcam",
+        analysis_rtsp_url="rtsp://127.0.0.1:8554/armcam-analysis",
+        analysis_width=640,
+        analysis_height=360,
+        analysis_fps=30,
+        analysis_bitrate="1M",
+        analysis_keyframe_interval=30,
     )
 
     assert command[command.index("-pixel_format") + 1] == "bgr24"
     assert command[command.index("-video_size") + 1] == "1920x1080"
     assert command[command.index("-r") + 1] == "30"
-    assert command[-1] == "rtsp://127.0.0.1:8554/armcam"
+    assert "scale=640:360,fps=30" in command[command.index("-filter_complex") + 1]
+    assert "rtsp://127.0.0.1:8554/armcam" in command
+    assert command[-1] == "rtsp://127.0.0.1:8554/armcam-analysis"
+    assert [command[index + 1] for index, item in enumerate(command) if item == "-bf"] == ["0", "0"]
 
 
 def test_linux_capture_command_uses_v4l2() -> None:
@@ -104,6 +129,20 @@ def test_linux_capture_command_uses_v4l2() -> None:
     assert "v4l2" in command
     assert "/dev/momo-camera" in command
     assert "libx264" in command
+    assert command.count("-i") == 1
+    assert "rtsp://127.0.0.1:8554/armcam" in command
+    assert "rtsp://127.0.0.1:8554/armcam-analysis" in command
+    assert "scale=640:360,fps=30" in command[command.index("-filter_complex") + 1]
+
+
+def test_analysis_stream_can_be_disabled_without_changing_primary_output() -> None:
+    config = AppConfig.default(platform_name="Darwin", home=Path("/Users/test"))
+    config.analysis_stream.enabled = False
+
+    command = build_capture_command(config)
+
+    assert "--analysis-rtsp-url" not in command
+    assert command[-1] == "rtsp://127.0.0.1:8554/armcam"
 
 
 def test_snapshot_and_record_commands_read_shared_rtsp(tmp_path: Path) -> None:

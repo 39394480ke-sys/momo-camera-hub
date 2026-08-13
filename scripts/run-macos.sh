@@ -8,4 +8,5 @@ if [[ ! -f config.local.yaml ]]; then
   cp config.example.yaml config.local.yaml
 fi
 
-exec uv run momo-camera-hub --config config.local.yaml
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec uv run python -m momo_camera_hub --config config.local.yaml

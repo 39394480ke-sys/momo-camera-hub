@@ -5,10 +5,11 @@
 ## 首版能力
 
 - WebRTC 低延迟实时预览，HLS 端口同时保留。
+- 单次物理摄像头采集同时输出 1080p 主流和 `640x360@30 FPS` 视觉分析流。
 - 服务端拍照、录像启停和本地媒体库。
 - 浏览器断开不会停止录像。
 - 一个活动录像，录像期间仍可拍照。
-- 摄像头采集进程异常退出后自动重启。
+- 摄像头采集进程或 MediaMTX 异常退出后自动恢复，流在线状态持续按 MediaMTX 路径就绪信号更新。
 - macOS AVFoundation、Linux V4L2 和无硬件 `testsrc` 三种采集后端。
 - 录像先写 Matroska 临时文件，停止后无损转封装为 MP4。
 
@@ -69,8 +70,13 @@ Camera Hub 是物理摄像头的唯一采集者。MOMO 视觉服务读取本机 
 
 ```bash
 export ARM_VISION_SOURCE_TYPE=rtsp
-export ARM_VISION_RTSP_URL=rtsp://127.0.0.1:8554/armcam
+export ARM_VISION_RTSP_URL=rtsp://127.0.0.1:8554/armcam-analysis
 ```
+
+`armcam` 保持 `1920x1080`，供 WebRTC 预览、拍照和录像使用；默认启用的
+`armcam-analysis` 以约 1 Mbps 输出 `640x360@30 FPS`，只供视觉处理使用。两个流由同一个
+FFmpeg 编码进程从同一次摄像头采集生成，不会重复打开物理设备。可通过
+`analysis_stream` 调整或禁用分析流，通过 `vision.base_url` 配置视觉服务地址。
 
 视觉服务继续绑定 `127.0.0.1:8000`，MOMO Web 控制台继续使用 `8010`，Camera Hub 使用 `8020`。
 

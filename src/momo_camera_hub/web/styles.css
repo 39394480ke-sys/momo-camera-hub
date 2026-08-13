@@ -128,6 +128,37 @@ main {
   margin: 0 auto 10px;
 }
 
+.target-reset-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 11px;
+  color: #27585e;
+  background: var(--surface);
+  border: 1px solid var(--strong-line);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.target-reset-button:hover {
+  border-color: #879598;
+  background: #fbfcfc;
+}
+
+.target-reset-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.target-reset-button svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.8;
+}
+
 .camera-picker {
   display: inline-flex;
   align-items: center;
@@ -170,10 +201,61 @@ main {
 }
 
 .video-shell iframe {
+  position: absolute;
+  inset: 0;
+  display: block;
   width: 100%;
   height: 100%;
   border: 0;
   background: #0a0d0e;
+}
+
+.vision-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.vision-overlay > * {
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.vision-dead-zone {
+  fill: rgba(246, 196, 68, 0.08);
+  stroke: rgba(255, 218, 111, 0.9);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
+.vision-desired-center {
+  stroke: #ffdf7b;
+  stroke-width: 1.5;
+}
+
+.vision-target-box {
+  fill: rgba(40, 205, 155, 0.06);
+  stroke: #34d9a4;
+  stroke-width: 2.5;
+}
+
+.vision-target-center {
+  fill: #34d9a4;
+  stroke: rgba(8, 20, 18, 0.9);
+  stroke-width: 2;
+}
+
+.vision-selection-box {
+  fill: rgba(65, 166, 255, 0.13);
+  stroke: #69b8ff;
+  stroke-width: 2;
+  stroke-dasharray: 7 5;
 }
 
 .live-indicator {
@@ -191,6 +273,7 @@ main {
   font-size: 12px;
   font-weight: 750;
   pointer-events: none;
+  z-index: 4;
 }
 
 .live-indicator span {
@@ -210,6 +293,7 @@ main {
   color: #d8e0e1;
   background: #13191a;
   text-align: center;
+  z-index: 6;
 }
 
 .video-offline[hidden] {
@@ -237,6 +321,90 @@ main {
   margin: 8px auto;
   border: 2px solid #6e7c7f;
   border-radius: 50%;
+}
+
+.vision-telemetry {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 12px;
+  max-width: calc(100% - 24px);
+  padding: 7px 10px;
+  color: #dce5e6;
+  background: rgba(8, 15, 16, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.vision-service {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vision-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9ba5a7;
+}
+
+.vision-dot.online {
+  background: #34d9a4;
+}
+
+.vision-dot.warning {
+  background: #f4c44e;
+}
+
+.vision-dot.offline {
+  background: #ff655e;
+}
+
+.victory-snapshot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 310px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.victory-snapshot[hidden] {
+  display: none;
+}
+
+.victory-snapshot svg {
+  width: 13px;
+  height: 13px;
+}
+
+.victory-snapshot > span {
+  overflow: hidden;
+  color: #aebfc1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.victory-snapshot[data-state="ready"] strong {
+  color: #55dfb3;
+}
+
+.victory-snapshot[data-state="active"] strong,
+.victory-snapshot[data-state="cooldown"] strong {
+  color: #ffdf7b;
+}
+
+.victory-snapshot[data-state="error"] strong {
+  color: #ff837d;
 }
 
 .capture-controls {
@@ -608,6 +776,17 @@ main {
     width: 100%;
   }
 
+  .target-reset-button span {
+    display: none;
+  }
+
+  .target-reset-button {
+    width: 38px;
+    flex: 0 0 38px;
+    justify-content: center;
+    padding: 0;
+  }
+
   .camera-picker {
     flex: 1;
   }
@@ -620,6 +799,14 @@ main {
   .video-shell {
     width: 100%;
     min-height: 0;
+  }
+
+  .vision-telemetry {
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    max-width: none;
+    justify-content: space-between;
   }
 
   .capture-controls {

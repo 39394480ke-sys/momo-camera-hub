@@ -146,6 +146,9 @@ class CameraHubService:
         disk = shutil.disk_usage(self.config.storage.root)
         runtime = self.stream_supervisor.status() if self.stream_supervisor else {"running": True, "last_error": None}
         actual_stream = runtime.get("actual_stream") or {}
+        actual_analysis_stream = runtime.get("actual_analysis_stream") or {}
+        main_online = bool(runtime.get("main_online", runtime.get("running")))
+        media_server_running = bool(runtime.get("media_server_running", runtime.get("running")))
         active = self._active_recording
         now = datetime.now(UTC)
         return {
@@ -156,7 +159,7 @@ class CameraHubService:
                 "height": actual_stream.get("height", self.config.camera.height),
                 "fps": actual_stream.get("fps", self.config.camera.fps),
                 "rotation": self.config.camera.rotation,
-                "online": bool(runtime.get("running")),
+                "online": main_online,
                 "last_error": runtime.get("last_error"),
                 "capture_restarts": runtime.get("capture_restarts", 0),
             },
@@ -165,7 +168,21 @@ class CameraHubService:
                 "webrtc_port": self.config.stream.webrtc_port,
                 "hls_port": self.config.stream.hls_port,
                 "rtsp_url": self.config.stream.rtsp_url,
+                "main_online": main_online,
+                "media_server_running": media_server_running,
+                "media_server_restarts": runtime.get("media_server_restarts", 0),
                 "viewer_count": runtime.get("viewer_count"),
+                "analysis_path": self.config.analysis_stream.path,
+                "analysis_rtsp_url": self.config.analysis_rtsp_url,
+                "analysis_width": actual_analysis_stream.get("width", self.config.analysis_stream.width),
+                "analysis_height": actual_analysis_stream.get("height", self.config.analysis_stream.height),
+                "analysis_fps": actual_analysis_stream.get("fps", self.config.analysis_stream.fps),
+                "analysis_online": bool(
+                    runtime.get(
+                        "analysis_online",
+                        self.config.analysis_stream.enabled and runtime.get("running"),
+                    )
+                ),
             },
             "recording": {
                 "active": active is not None,

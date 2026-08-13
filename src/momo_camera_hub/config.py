@@ -47,7 +47,41 @@ class StreamConfig:
 
     @property
     def rtsp_url(self) -> str:
-        return f"rtsp://127.0.0.1:{self.rtsp_port}/{self.path}"
+        return self.rtsp_url_for(self.path)
+
+    def rtsp_url_for(self, path: str) -> str:
+        return f"rtsp://127.0.0.1:{self.rtsp_port}/{path}"
+
+
+@dataclass
+class AnalysisStreamConfig:
+    enabled: bool = True
+    path: str = "armcam-analysis"
+    width: int = 640
+    height: int = 360
+    fps: int = 30
+    bitrate: str = "1M"
+    keyframe_interval: int = 30
+
+    def __post_init__(self) -> None:
+        if self.width <= 0 or self.height <= 0 or self.fps <= 0:
+            raise ValueError("analysis stream width, height, and fps must be positive")
+        if self.keyframe_interval <= 0:
+            raise ValueError("analysis stream keyframe interval must be positive")
+        if not self.path:
+            raise ValueError("analysis stream path cannot be empty")
+        if not self.bitrate:
+            raise ValueError("analysis stream bitrate cannot be empty")
+
+
+@dataclass
+class VisionConfig:
+    base_url: str = "http://127.0.0.1:8000"
+
+    def __post_init__(self) -> None:
+        self.base_url = self.base_url.rstrip("/")
+        if not self.base_url:
+            raise ValueError("vision base URL cannot be empty")
 
 
 @dataclass
@@ -72,10 +106,20 @@ class AppConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     stream: StreamConfig = field(default_factory=StreamConfig)
+    analysis_stream: AnalysisStreamConfig = field(default_factory=AnalysisStreamConfig)
+    vision: VisionConfig = field(default_factory=VisionConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
+
+    def __post_init__(self) -> None:
+        if self.analysis_stream.enabled and self.analysis_stream.path == self.stream.path:
+            raise ValueError("analysis stream path must differ from the primary stream path")
+
+    @property
+    def analysis_rtsp_url(self) -> str:
+        return self.stream.rtsp_url_for(self.analysis_stream.path)
 
     @classmethod
     def default(cls, platform_name: str | None = None, home: Path | None = None) -> AppConfig:

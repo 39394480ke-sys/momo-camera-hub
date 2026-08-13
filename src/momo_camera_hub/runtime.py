@@ -9,6 +9,7 @@ import socket
 import tempfile
 import time
 import urllib.request
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -34,12 +35,29 @@ def count_path_readers(payload: dict[str, Any], path_name: str) -> int:
     return 0
 
 
+def path_is_ready(payload: dict[str, Any], path_name: str) -> bool:
+    for item in payload.get("items", []):
+        if item.get("name") != path_name:
+            continue
+        return bool(item.get("ready") and item.get("online", True))
+    return False
+
+
 def validate_stream_dimensions(*, expected: tuple[int, int], actual: tuple[int, int]) -> None:
     if actual != expected:
         raise ValueError(
             f"camera produced {actual[0]}x{actual[1]}, expected {expected[0]}x{expected[1]}; "
             "adjust camera.rotation or the configured dimensions"
         )
+
+
+def validate_stream_fps(*, expected: int, actual: str | int | float) -> None:
+    try:
+        actual_fps = float(Fraction(str(actual)))
+    except (ValueError, ZeroDivisionError):
+        raise ValueError(f"camera produced an invalid frame rate: {actual}") from None
+    if abs(actual_fps - expected) > 0.5:
+        raise ValueError(f"camera produced {actual_fps:g} FPS, expected {expected} FPS")
 
 
 async def _run_checked(command: list[str], timeout: float = 20.0) -> None:
@@ -152,7 +170,10 @@ def render_mediamtx_config(config: AppConfig, runtime_dir: Path) -> Path:
 logLevel: info
 rtsp: true
 rtspAddress: 127.0.0.1:{config.stream.rtsp_port}
+rtspTransports: [tcp]
 rtmp: false
+srt: false
+moq: false
 hls: true
 hlsAddress: :{config.stream.hls_port}
 hlsAllowOrigins: ["*"]
@@ -170,6 +191,8 @@ pathDefaults:
 paths:
   {config.stream.path}:
 """
+    if config.analysis_stream.enabled:
+        content += f"  {config.analysis_stream.path}:\n"
     temporary = path.with_suffix(".yml.tmp")
     temporary.write_text(content, encoding="utf-8")
     os.replace(temporary, path)
@@ -183,40 +206,49 @@ class StreamSupervisor:
         self.mediamtx_process: asyncio.subprocess.Process | None = None
         self.capture_process: asyncio.subprocess.Process | None = None
         self.watch_task: asyncio.Task[None] | None = None
+        self.media_watch_task: asyncio.Task[None] | None = None
         self.viewer_task: asyncio.Task[None] | None = None
         self.stopping = False
         self.last_error = ""
         self.capture_restarts = 0
+        self.media_server_restarts = 0
         self.viewer_count = 0
+        self.main_online = False
+        self.analysis_online = False
         self.capture_started_at: float | None = None
         self.actual_stream: dict[str, Any] | None = None
+        self.actual_analysis_stream: dict[str, Any] | None = None
         self._capture_lock = asyncio.Lock()
+        self._restart_delay_initial = 1.0
 
     async def start(self) -> None:
+        self.stopping = False
         self._check_dependencies()
-        mediamtx_config = render_mediamtx_config(self.config, self.runtime_dir)
-        self.mediamtx_process = await self._spawn([self.config.stream.mediamtx_binary, str(mediamtx_config)])
-        await self._wait_for_port("127.0.0.1", self.config.stream.rtsp_port, timeout=10)
+        await self._start_media_server()
         try:
             await self._start_capture()
         except Exception as exc:
             self.capture_process = None
             self.last_error = str(exc)
         self.watch_task = asyncio.create_task(self._watch_capture(), name="camera-capture-watchdog")
-        self.viewer_task = asyncio.create_task(self._watch_viewers(), name="stream-viewer-counter")
+        self.media_watch_task = asyncio.create_task(self._watch_media_server(), name="media-server-watchdog")
+        self.viewer_task = asyncio.create_task(self._watch_viewers(), name="stream-path-health")
 
     async def stop(self) -> None:
         self.stopping = True
-        if self.watch_task:
-            self.watch_task.cancel()
-            await asyncio.gather(self.watch_task, return_exceptions=True)
-        if self.viewer_task:
-            self.viewer_task.cancel()
-            await asyncio.gather(self.viewer_task, return_exceptions=True)
+        tasks = [task for task in (self.watch_task, self.media_watch_task, self.viewer_task) if task]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await self._terminate(self.capture_process)
         await self._terminate(self.mediamtx_process)
         self.capture_process = None
         self.mediamtx_process = None
+        self.watch_task = None
+        self.media_watch_task = None
+        self.viewer_task = None
+        self.main_online = False
+        self.analysis_online = False
 
     async def select_camera(self, camera: CameraDevice) -> None:
         async with self._capture_lock:
@@ -232,6 +264,9 @@ class StreamSupervisor:
             self.config.camera.device = camera.device
             self.config.camera.index = camera.index
             self.actual_stream = None
+            self.actual_analysis_stream = None
+            self.main_online = False
+            self.analysis_online = False
             try:
                 await self._start_capture()
             except Exception as selection_error:
@@ -249,12 +284,17 @@ class StreamSupervisor:
             self.last_error = ""
 
     def status(self) -> dict[str, Any]:
+        media_server_running = bool(self.mediamtx_process and self.mediamtx_process.returncode is None)
         return {
             "running": bool(self.capture_process and self.capture_process.returncode is None),
-            "media_server_running": bool(self.mediamtx_process and self.mediamtx_process.returncode is None),
+            "media_server_running": media_server_running,
+            "media_server_restarts": self.media_server_restarts,
             "capture_restarts": self.capture_restarts,
             "capture_started_at": self.capture_started_at,
             "actual_stream": self.actual_stream,
+            "actual_analysis_stream": self.actual_analysis_stream,
+            "main_online": bool(media_server_running and self.main_online),
+            "analysis_online": bool(media_server_running and self.analysis_online),
             "viewer_count": self.viewer_count,
             "last_error": self.last_error or None,
         }
@@ -262,18 +302,89 @@ class StreamSupervisor:
     async def _watch_viewers(self) -> None:
         while not self.stopping:
             try:
-                self.viewer_count = await asyncio.to_thread(self._fetch_viewer_count)
+                health = await asyncio.to_thread(self._fetch_path_health)
+                self.viewer_count = health["viewer_count"]
+                self.main_online = health["main_online"]
+                self.analysis_online = health["analysis_online"]
             except Exception:
                 self.viewer_count = 0
-            await asyncio.sleep(1)
+                self.main_online = False
+                self.analysis_online = False
+            await asyncio.sleep(0.5)
 
     def _fetch_viewer_count(self) -> int:
+        return self._fetch_path_health()["viewer_count"]
+
+    def _fetch_path_health(self) -> dict[str, Any]:
         url = f"http://127.0.0.1:{self.config.stream.api_port}/v3/paths/list"
         with urllib.request.urlopen(url, timeout=1) as response:
             payload = json.load(response)
-        return count_path_readers(payload, self.config.stream.path)
+        return {
+            "viewer_count": count_path_readers(payload, self.config.stream.path),
+            "main_online": path_is_ready(payload, self.config.stream.path),
+            "analysis_online": bool(
+                self.config.analysis_stream.enabled
+                and path_is_ready(payload, self.config.analysis_stream.path)
+            ),
+        }
+
+    async def _start_media_server(self) -> None:
+        mediamtx_config = render_mediamtx_config(self.config, self.runtime_dir)
+        process = await self._spawn([self.config.stream.mediamtx_binary, str(mediamtx_config)])
+        self.mediamtx_process = process
+        try:
+            await self._wait_for_port("127.0.0.1", self.config.stream.rtsp_port, timeout=10)
+            await self._wait_for_port("127.0.0.1", self.config.stream.api_port, timeout=10)
+            if process.returncode is not None:
+                stderr = await process.stderr.read() if process.stderr else b""
+                raise CommandError(stderr.decode(errors="replace").strip() or "media server exited during startup")
+        except Exception:
+            await self._terminate(process)
+            if self.mediamtx_process is process:
+                self.mediamtx_process = None
+            raise
+
+    async def _watch_media_server(self) -> None:
+        delay = self._restart_delay_initial
+        while not self.stopping:
+            process = self.mediamtx_process
+            failed_capture: asyncio.subprocess.Process | None = None
+            if process is not None:
+                stderr = await process.stderr.read() if process.stderr else b""
+                await process.wait()
+                if self.stopping:
+                    return
+                if process is not self.mediamtx_process:
+                    continue
+                failed_capture = self.capture_process
+                self.mediamtx_process = None
+                self.main_online = False
+                self.analysis_online = False
+                self.media_server_restarts += 1
+                detail = stderr.decode(errors="replace").strip()[-1000:]
+                self.last_error = f"media server stopped: {detail}" if detail else "media server stopped"
+
+            while self.mediamtx_process is None and not self.stopping:
+                await asyncio.sleep(delay)
+                try:
+                    await self._start_media_server()
+                except Exception as exc:
+                    self.last_error = f"media server restart failed: {exc}"
+                    delay = min(delay * 2, 30)
+                    continue
+                delay = self._restart_delay_initial
+                if failed_capture is not None:
+                    async with self._capture_lock:
+                        if self.capture_process is failed_capture:
+                            self.capture_process = None
+                            self.actual_stream = None
+                            self.actual_analysis_stream = None
+                            await self._terminate(failed_capture)
+                break
 
     async def _start_capture(self) -> None:
+        self.main_online = False
+        self.analysis_online = False
         self.capture_process = await self._spawn(build_capture_command(self.config))
         self.capture_started_at = time.time()
         await asyncio.sleep(0.8)
@@ -286,8 +397,31 @@ class StreamSupervisor:
                 expected=(self.config.camera.width, self.config.camera.height),
                 actual=(self.actual_stream["width"], self.actual_stream["height"]),
             )
+            validate_stream_fps(expected=self.config.camera.fps, actual=self.actual_stream["fps"])
+            if self.config.analysis_stream.enabled:
+                self.actual_analysis_stream = await self._probe_stream(self.config.analysis_rtsp_url)
+                validate_stream_dimensions(
+                    expected=(self.config.analysis_stream.width, self.config.analysis_stream.height),
+                    actual=(
+                        self.actual_analysis_stream["width"],
+                        self.actual_analysis_stream["height"],
+                    ),
+                )
+                validate_stream_fps(
+                    expected=self.config.analysis_stream.fps,
+                    actual=self.actual_analysis_stream["fps"],
+                )
+                self.analysis_online = True
+            else:
+                self.actual_analysis_stream = None
+                self.analysis_online = False
+            self.main_online = True
         except Exception:
             await self._terminate(self.capture_process)
+            self.actual_stream = None
+            self.actual_analysis_stream = None
+            self.main_online = False
+            self.analysis_online = False
             raise
 
     async def _watch_capture(self) -> None:
@@ -316,6 +450,10 @@ class StreamSupervisor:
                 if process is not self.capture_process:
                     continue
                 self.capture_process = None
+                self.actual_stream = None
+                self.actual_analysis_stream = None
+                self.main_online = False
+                self.analysis_online = False
                 self.last_error = stderr.decode(errors="replace").strip()[-1000:] or "camera capture stopped"
                 self.capture_restarts += 1
                 await asyncio.sleep(delay)
@@ -337,18 +475,20 @@ class StreamSupervisor:
         if missing:
             raise FileNotFoundError(f"missing required executables: {', '.join(missing)}")
 
-    async def _probe_stream(self, timeout: float = 10.0) -> dict[str, Any]:
+    async def _probe_stream(self, rtsp_url: str | None = None, timeout: float = 10.0) -> dict[str, Any]:
+        rtsp_url = rtsp_url or self.config.stream.rtsp_url
         deadline = time.monotonic() + timeout
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             try:
-                return await self._probe_stream_once()
+                return await self._probe_stream_once(rtsp_url)
             except CommandError as exc:
                 last_error = exc
                 await asyncio.sleep(0.2)
         raise CommandError(f"published stream was not ready within {timeout:g}s: {last_error}")
 
-    async def _probe_stream_once(self) -> dict[str, Any]:
+    async def _probe_stream_once(self, rtsp_url: str | None = None) -> dict[str, Any]:
+        rtsp_url = rtsp_url or self.config.stream.rtsp_url
         process = await asyncio.create_subprocess_exec(
             self.config.ffprobe_binary,
             "-v",
@@ -359,7 +499,7 @@ class StreamSupervisor:
             "stream=width,height,r_frame_rate",
             "-of",
             "json",
-            self.config.stream.rtsp_url,
+            rtsp_url,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,

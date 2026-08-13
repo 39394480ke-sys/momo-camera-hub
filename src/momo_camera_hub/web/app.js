@@ -7,19 +7,31 @@ const state = {
   cameras: [],
   selectedCameraId: null,
   switchingCamera: false,
+  visionLatest: null,
+  visionHealth: null,
+  visionRuntime: null,
+  visionTarget: null,
+  visionFastLoading: false,
+  visionSlowLoading: false,
+  visionLastSuccessAt: 0,
+  visionLatestReceivedAt: 0,
+  visionAvailable: false,
+  visionDrag: null,
+  liveFrameAddress: "",
 };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 function init() {
-  refreshLiveFrame();
   const streamHost = window.location.hostname || "127.0.0.1";
   const controlLink = $("#controlLink");
-  if (controlLink) controlLink.href = `http://${streamHost}:8110/`;
+  if (controlLink) controlLink.href = `http://${streamHost}:8010/web/`;
 
   $("#cameraSelect").addEventListener("change", selectCamera);
   $("#cameraRefreshButton").addEventListener("click", loadCameras);
+  $("#resetVisionTargetButton").addEventListener("click", resetVisionTarget);
+  bindVisionSelection();
   $("#snapshotButton").addEventListener("click", takeSnapshot);
   $("#recordButton").addEventListener("click", toggleRecording);
   $("#refreshButton").addEventListener("click", () => loadMedia(true));
@@ -43,10 +55,22 @@ function init() {
   window.lucide?.createIcons();
   loadCameras();
   refreshStatus();
+  refreshVisionLatest();
+  refreshVisionService();
   loadMedia(true);
   openRequestedMedia();
   setInterval(refreshStatus, 1000);
+  setInterval(() => {
+    if (!document.hidden) refreshVisionLatest();
+  }, 100);
+  setInterval(() => {
+    if (!document.hidden) refreshVisionService();
+  }, 2000);
   setInterval(renderTimer, 250);
+  window.addEventListener("resize", () => {
+    syncVisionOverlayGeometry();
+    renderVisionOverlay(state.visionLatest);
+  });
 }
 
 async function api(path, options = {}) {
@@ -95,6 +119,7 @@ function renderStatus(data) {
   $(".record-timer").classList.toggle("active", active);
   $("#cameraSelect").disabled = active || state.switchingCamera;
   $("#cameraRefreshButton").disabled = state.switchingCamera;
+  refreshLiveFrame(data);
   window.lucide?.createIcons();
 }
 
@@ -105,8 +130,20 @@ function renderOffline(message) {
   $("#offlineMessage").textContent = message;
 }
 
-function refreshLiveFrame() {
+function refreshLiveFrame(status = state.status) {
   const streamHost = window.location.hostname || "127.0.0.1";
+  const configuredPort = Number(status?.stream?.webrtc_port);
+  const streamPort = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535
+    ? configuredPort
+    : 8889;
+  const streamPath = String(status?.stream?.path || "armcam")
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/") || "armcam";
+  const address = `http://${streamHost}:${streamPort}/${streamPath}`;
+  if (state.liveFrameAddress === address) return;
+  state.liveFrameAddress = address;
   const query = new URLSearchParams({
     controls: "false",
     muted: "true",
@@ -114,7 +151,412 @@ function refreshLiveFrame() {
     playsInline: "true",
     stream: String(Date.now()),
   });
-  $("#liveFrame").src = `http://${streamHost}:8889/armcam?${query}`;
+  $("#liveFrame").src = `${address}?${query}`;
+}
+
+async function refreshVisionLatest() {
+  if (state.visionFastLoading) return;
+  state.visionFastLoading = true;
+  try {
+    const latest = await api("/api/v1/vision/latest");
+    state.visionLatest = latest;
+    state.visionLatestReceivedAt = Date.now();
+    state.visionLastSuccessAt = Date.now();
+    renderVisionLatest(latest);
+  } catch (error) {
+    if (Date.now() - state.visionLastSuccessAt > 750) renderVisionUnavailable(error.message);
+  } finally {
+    state.visionFastLoading = false;
+  }
+}
+
+async function refreshVisionService() {
+  if (state.visionSlowLoading) return;
+  state.visionSlowLoading = true;
+  try {
+    const [healthResult, statusResult, targetResult] = await Promise.allSettled([
+      api("/api/v1/vision/health"),
+      api("/api/v1/vision/status"),
+      api("/api/v1/vision/target/state"),
+    ]);
+    if (statusResult.status === "fulfilled") {
+      state.visionRuntime = statusResult.value;
+      renderVictorySnapshot(null);
+    }
+    if (targetResult.status === "fulfilled") state.visionTarget = targetResult.value;
+    if (healthResult.status === "fulfilled") {
+      state.visionLastSuccessAt = Date.now();
+      const health = healthResult.value;
+      state.visionHealth = health;
+      if (health.running === false || health.camera_available === false) {
+        renderVisionWarning(health.running === false ? "视觉未运行" : "视觉无画面");
+      }
+    } else if (Date.now() - state.visionLastSuccessAt > 1500) {
+      renderVisionUnavailable(healthResult.reason?.message || "视觉服务不可用");
+    }
+    if (state.visionLatest) renderVisionLatest(state.visionLatest);
+  } finally {
+    state.visionSlowLoading = false;
+  }
+}
+
+function renderVisionLatest(latest) {
+  const camera = latest.camera || {};
+  const cameraAvailable = camera.available !== false
+    && camera.opened !== false
+    && state.visionHealth?.running !== false
+    && state.visionHealth?.camera_available !== false;
+  const frameAgeSec = visionFrameAgeSec(latest);
+  const processingSec = visionProcessingSec(latest);
+  const dropped = visionDroppedFrames(latest);
+  const stale = Number.isFinite(frameAgeSec) && frameAgeSec > 0.25;
+  const usable = cameraAvailable && !stale;
+  state.visionAvailable = usable;
+
+  $("#visionDot").className = `vision-dot ${cameraAvailable && !stale ? "online" : "warning"}`;
+  $("#visionState").textContent = cameraAvailable ? (stale ? "视觉帧过期" : "视觉在线") : "视觉无画面";
+  const hasTarget = Boolean(latest.has_target ?? latest.detected ?? state.visionTarget?.has_target);
+  const targetSource = latest.target_source || state.visionTarget?.target_source || "none";
+  $("#visionTargetState").textContent = hasTarget ? `目标 ${targetSource}` : "目标 --";
+  $("#visionFrameAgeState").textContent = `帧龄 ${formatMilliseconds(frameAgeSec)}`;
+  $("#visionLatencyState").textContent = `处理 ${formatMilliseconds(processingSec)}`;
+  $("#visionDroppedState").textContent = `丢帧 ${formatCount(dropped)}`;
+  renderVictorySnapshot(cameraAvailable && !stale ? latest : null);
+  $("#resetVisionTargetButton").disabled = !usable;
+
+  syncVisionOverlayGeometry();
+  renderVisionOverlay(usable ? latest : null);
+}
+
+function renderVisionWarning(message) {
+  state.visionAvailable = false;
+  $("#visionDot").className = "vision-dot warning";
+  $("#visionState").textContent = message;
+}
+
+function renderVisionUnavailable(message) {
+  state.visionAvailable = false;
+  $("#visionDot").className = "vision-dot offline";
+  $("#visionState").textContent = "视觉离线";
+  $("#visionTargetState").textContent = "目标 --";
+  $("#visionFrameAgeState").textContent = "帧龄 --";
+  $("#visionLatencyState").textContent = "处理 --";
+  $("#visionDroppedState").textContent = "丢帧 --";
+  renderVictorySnapshot(null);
+  $("#visionTelemetry").title = message;
+  $("#resetVisionTargetButton").disabled = true;
+  renderVisionOverlay(null);
+}
+
+function renderVictorySnapshot(latest) {
+  const telemetry = $("#victorySnapshotTelemetry");
+  const snapshot = (
+    latest?.victory_snapshot
+    ?? latest?.gesture?.victory_snapshot
+    ?? latest?.gesture?.snapshot
+    ?? state.visionRuntime?.victory_snapshot
+    ?? state.visionRuntime?.gesture?.victory_snapshot
+    ?? state.visionRuntime?.gesture?.snapshot
+  );
+  if (!snapshot || typeof snapshot !== "object") {
+    telemetry.hidden = true;
+    return;
+  }
+
+  telemetry.hidden = false;
+  const stateNode = $("#victorySnapshotState");
+  const lastNode = $("#victorySnapshotLast");
+  const cooldown = Math.max(0, Number(snapshot.cooldown_remaining_sec) || 0);
+  const error = String(snapshot.last_error || snapshot.error || "").trim();
+  const enabled = snapshot.enabled !== false;
+  let status = "等待手放下";
+  let mode = "waiting";
+  if (!enabled) {
+    status = "Victory 拍照未启用";
+    mode = "disabled";
+  } else if (snapshot.in_flight) {
+    status = "Victory 拍照中";
+    mode = "active";
+  } else if (error) {
+    status = "Victory 拍照失败";
+    mode = "error";
+  } else if (cooldown > 0) {
+    status = `Victory 冷却 ${cooldown.toFixed(1)} s`;
+    mode = "cooldown";
+  } else if (snapshot.armed) {
+    status = "Victory 已就绪";
+    mode = "ready";
+  } else if (snapshot.release_required) {
+    status = "Victory 等待手放下";
+  }
+  stateNode.textContent = status;
+  telemetry.dataset.state = mode;
+
+  const lastSnapshot = snapshot.last_snapshot;
+  if (error) {
+    lastNode.textContent = error;
+  } else if (lastSnapshot && typeof lastSnapshot === "object") {
+    const label = lastSnapshot.download_name || lastSnapshot.id || "照片已保存";
+    lastNode.textContent = `最近 ${label}`;
+  } else if (snapshot.last_completed_at) {
+    lastNode.textContent = `最近 ${formatClockTime(snapshot.last_completed_at)}`;
+  } else {
+    lastNode.textContent = "";
+  }
+  telemetry.title = [
+    `armed=${Boolean(snapshot.armed)}`,
+    `in_flight=${Boolean(snapshot.in_flight)}`,
+    `cooldown=${cooldown.toFixed(1)}s`,
+    error ? `error=${error}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function formatClockTime(value) {
+  const timestamp = parseTimestamp(value);
+  if (!Number.isFinite(timestamp)) return "--";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
+function visionFrameAgeSec(latest) {
+  const direct = Number(latest.frame_age_sec ?? latest.source_frame_age_sec);
+  if (Number.isFinite(direct)) {
+    const cachedForSec = latest === state.visionLatest && state.visionLatestReceivedAt > 0
+      ? Math.max(0, (Date.now() - state.visionLatestReceivedAt) / 1000)
+      : 0;
+    return Math.max(0, direct) + cachedForSec;
+  }
+  const receivedAt = parseTimestamp(
+    latest.frame_received_at
+      ?? latest.source_frame_received_at
+      ?? latest.capture_timestamp
+      ?? latest.captured_at
+      ?? latest.timestamp
+  );
+  return Number.isFinite(receivedAt) ? Math.max(0, Date.now() / 1000 - receivedAt) : NaN;
+}
+
+function visionProcessingSec(latest) {
+  const direct = Number(latest.processing_latency_sec ?? latest.processing_time_sec);
+  if (Number.isFinite(direct)) return Math.max(0, direct);
+  const milliseconds = Number(latest.processing_latency_ms);
+  if (Number.isFinite(milliseconds)) return Math.max(0, milliseconds / 1000);
+  const receivedAt = parseTimestamp(latest.frame_received_at ?? latest.source_frame_received_at);
+  const processedAt = parseTimestamp(latest.processed_at ?? latest.timestamp);
+  return Number.isFinite(receivedAt) && Number.isFinite(processedAt)
+    ? Math.max(0, processedAt - receivedAt)
+    : NaN;
+}
+
+function visionDroppedFrames(latest) {
+  const value = latest.dropped_source_frames
+    ?? latest.source_dropped_frames
+    ?? latest.camera?.dropped_frames
+    ?? state.visionRuntime?.dropped_source_frames
+    ?? state.visionRuntime?.camera?.dropped_frames;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.round(numeric)) : NaN;
+}
+
+function parseTimestamp(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? milliseconds / 1000 : NaN;
+}
+
+function formatMilliseconds(seconds) {
+  return Number.isFinite(seconds) ? `${Math.round(seconds * 1000)} ms` : "--";
+}
+
+function formatCount(value) {
+  return Number.isFinite(value) ? new Intl.NumberFormat("zh-CN").format(value) : "--";
+}
+
+function renderVisionOverlay(latest) {
+  const overlay = $("#visionOverlay");
+  overlay.replaceChildren();
+  if (!latest) return;
+  const { width, height } = visionFrameSize(latest);
+  if (width <= 0 || height <= 0) return;
+
+  overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const make = (tag, attributes) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, String(value)));
+    overlay.append(node);
+    return node;
+  };
+
+  const offset = latest.offset || {};
+  const desired = offset.desired_center || latest.desired_center;
+  const deadZoneX = Number(offset.dead_zone_x_norm ?? latest.dead_zone_x_norm ?? 0.02) * width;
+  const deadZoneY = Number(offset.dead_zone_y_norm ?? latest.dead_zone_y_norm ?? 0.025) * height;
+  if (Array.isArray(desired) && desired.length >= 2) {
+    make("rect", {
+      class: "vision-dead-zone",
+      x: Number(desired[0]) - deadZoneX,
+      y: Number(desired[1]) - deadZoneY,
+      width: Math.max(1, deadZoneX * 2),
+      height: Math.max(1, deadZoneY * 2),
+    });
+    make("line", {
+      class: "vision-desired-center",
+      x1: Number(desired[0]) - width * 0.014,
+      y1: desired[1],
+      x2: Number(desired[0]) + width * 0.014,
+      y2: desired[1],
+    });
+    make("line", {
+      class: "vision-desired-center",
+      x1: desired[0],
+      y1: Number(desired[1]) - height * 0.025,
+      x2: desired[0],
+      y2: Number(desired[1]) + height * 0.025,
+    });
+  }
+
+  const bbox = latest.bbox || latest.target?.bbox;
+  if (Array.isArray(bbox) && bbox.length >= 4) {
+    make("rect", {
+      class: "vision-target-box",
+      x: bbox[0],
+      y: bbox[1],
+      width: Math.max(1, Number(bbox[2]) || 0),
+      height: Math.max(1, Number(bbox[3]) || 0),
+    });
+  }
+  const center = latest.center || latest.target?.center || offset.target_center;
+  if (Array.isArray(center) && center.length >= 2) {
+    make("circle", { class: "vision-target-center", cx: center[0], cy: center[1], r: 5 });
+  }
+  renderVisionSelectionBox();
+}
+
+function visionFrameSize(latest = state.visionLatest || {}) {
+  const width = Number(latest.camera?.width || 0);
+  const height = Number(latest.camera?.height || 0);
+  return { width, height };
+}
+
+function syncVisionOverlayGeometry() {
+  const overlay = $("#visionOverlay");
+  const shell = $(".video-shell");
+  const { width, height } = visionFrameSize();
+  if (!shell || width <= 0 || height <= 0) {
+    overlay.removeAttribute("style");
+    return;
+  }
+  const shellWidth = shell.clientWidth;
+  const shellHeight = shell.clientHeight;
+  const sourceRatio = width / height;
+  const shellRatio = shellWidth / shellHeight;
+  const displayWidth = shellRatio > sourceRatio ? shellHeight * sourceRatio : shellWidth;
+  const displayHeight = shellRatio > sourceRatio ? shellHeight : shellWidth / sourceRatio;
+  overlay.style.left = `${(shellWidth - displayWidth) / 2}px`;
+  overlay.style.top = `${(shellHeight - displayHeight) / 2}px`;
+  overlay.style.width = `${displayWidth}px`;
+  overlay.style.height = `${displayHeight}px`;
+}
+
+function bindVisionSelection() {
+  const overlay = $("#visionOverlay");
+  overlay.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !state.visionLatest || !state.visionAvailable) return;
+    const point = visionPointerPoint(event);
+    if (!point) return;
+    event.preventDefault();
+    overlay.setPointerCapture?.(event.pointerId);
+    state.visionDrag = { pointerId: event.pointerId, start: point, end: point };
+    renderVisionOverlay(state.visionLatest);
+  });
+  overlay.addEventListener("pointermove", (event) => {
+    if (state.visionDrag?.pointerId !== event.pointerId) return;
+    const point = visionPointerPoint(event);
+    if (!point) return;
+    state.visionDrag.end = point;
+    renderVisionOverlay(state.visionLatest);
+  });
+  overlay.addEventListener("pointerup", finishVisionSelection);
+  overlay.addEventListener("pointercancel", clearVisionSelection);
+}
+
+function visionPointerPoint(event) {
+  const overlay = $("#visionOverlay");
+  const rect = overlay.getBoundingClientRect();
+  const { width, height } = visionFrameSize();
+  if (!rect.width || !rect.height || width <= 0 || height <= 0) return null;
+  return {
+    x: Math.max(0, Math.min(width, ((event.clientX - rect.left) / rect.width) * width)),
+    y: Math.max(0, Math.min(height, ((event.clientY - rect.top) / rect.height) * height)),
+  };
+}
+
+function renderVisionSelectionBox() {
+  const drag = state.visionDrag;
+  if (!drag) return;
+  const node = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  node.setAttribute("id", "visionSelectionBox");
+  node.setAttribute("class", "vision-selection-box");
+  node.setAttribute("x", String(Math.min(drag.start.x, drag.end.x)));
+  node.setAttribute("y", String(Math.min(drag.start.y, drag.end.y)));
+  node.setAttribute("width", String(Math.abs(drag.end.x - drag.start.x)));
+  node.setAttribute("height", String(Math.abs(drag.end.y - drag.start.y)));
+  $("#visionOverlay").append(node);
+}
+
+async function finishVisionSelection(event) {
+  const drag = state.visionDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const body = visionSelectionBody(drag);
+  clearVisionSelection();
+  if (!body) {
+    toast("框选区域太小", true);
+    return;
+  }
+  try {
+    const result = await api("/api/v1/vision/target/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (result.ok === false) throw new Error(result.message || "主体框选失败");
+    toast(result.message || "主体已框选");
+    await Promise.all([refreshVisionLatest(), refreshVisionService()]);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function visionSelectionBody(drag) {
+  const { width, height } = visionFrameSize();
+  const x = Math.max(0, Math.round(Math.min(drag.start.x, drag.end.x)));
+  const y = Math.max(0, Math.round(Math.min(drag.start.y, drag.end.y)));
+  const w = Math.min(width - x, Math.round(Math.abs(drag.end.x - drag.start.x)));
+  const h = Math.min(height - y, Math.round(Math.abs(drag.end.y - drag.start.y)));
+  return w >= 8 && h >= 8 ? { x, y, w, h } : null;
+}
+
+function clearVisionSelection() {
+  state.visionDrag = null;
+  renderVisionOverlay(state.visionLatest);
+}
+
+async function resetVisionTarget() {
+  const button = $("#resetVisionTargetButton");
+  button.disabled = true;
+  try {
+    const result = await api("/api/v1/vision/target/reset", { method: "POST" });
+    toast(result.message || "视觉主体已重置");
+    await Promise.all([refreshVisionLatest(), refreshVisionService()]);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = !state.visionAvailable;
+  }
 }
 
 async function loadCameras() {
@@ -164,7 +606,6 @@ async function selectCamera(event) {
     });
     state.selectedCameraId = selected.id;
     toast(`已切换到 ${selected.name}`);
-    refreshLiveFrame();
     await refreshStatus();
     await loadCameras();
   } catch (error) {

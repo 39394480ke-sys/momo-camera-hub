@@ -9,36 +9,19 @@ from collections.abc import Sequence
 import cv2
 
 
-def build_rawvideo_encoder_command(
+def _encoder_output(
     *,
-    ffmpeg_binary: str,
-    width: int,
-    height: int,
-    fps: int,
     encoder: str,
     bitrate: str,
     keyframe_interval: int,
+    fps: int,
     rtsp_url: str,
+    mapping: str | None = None,
 ) -> list[str]:
-    command = [
-        ffmpeg_binary,
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-f",
-        "rawvideo",
-        "-pixel_format",
-        "bgr24",
-        "-video_size",
-        f"{width}x{height}",
-        "-framerate",
-        str(fps),
-        "-i",
-        "pipe:0",
-        "-an",
-        "-c:v",
-        encoder,
-    ]
+    command: list[str] = []
+    if mapping:
+        command += ["-map", mapping]
+    command += ["-an", "-c:v", encoder]
     if encoder == "h264_videotoolbox":
         command += ["-realtime", "1", "-allow_sw", "1", "-profile:v", "baseline"]
     else:
@@ -66,6 +49,84 @@ def build_rawvideo_encoder_command(
         "tcp",
         rtsp_url,
     ]
+    return command
+
+
+def build_rawvideo_encoder_command(
+    *,
+    ffmpeg_binary: str,
+    width: int,
+    height: int,
+    fps: int,
+    encoder: str,
+    bitrate: str,
+    keyframe_interval: int,
+    rtsp_url: str,
+    analysis_rtsp_url: str | None = None,
+    analysis_width: int | None = None,
+    analysis_height: int | None = None,
+    analysis_fps: int | None = None,
+    analysis_bitrate: str | None = None,
+    analysis_keyframe_interval: int | None = None,
+) -> list[str]:
+    command = [
+        ffmpeg_binary,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "bgr24",
+        "-video_size",
+        f"{width}x{height}",
+        "-framerate",
+        str(fps),
+        "-i",
+        "pipe:0",
+    ]
+
+    if analysis_rtsp_url is not None:
+        analysis_values = (
+            analysis_width,
+            analysis_height,
+            analysis_fps,
+            analysis_bitrate,
+            analysis_keyframe_interval,
+        )
+        if any(value is None for value in analysis_values):
+            raise ValueError("analysis RTSP output requires dimensions, fps, bitrate, and keyframe interval")
+        command += [
+            "-filter_complex",
+            (
+                "[0:v]split=2[primary][analysis-source];"
+                f"[analysis-source]scale={analysis_width}:{analysis_height},fps={analysis_fps}[analysis]"
+            ),
+        ]
+        command += _encoder_output(
+            encoder=encoder,
+            bitrate=bitrate,
+            keyframe_interval=keyframe_interval,
+            fps=fps,
+            rtsp_url=rtsp_url,
+            mapping="[primary]",
+        )
+        command += _encoder_output(
+            encoder=encoder,
+            bitrate=str(analysis_bitrate),
+            keyframe_interval=int(analysis_keyframe_interval),
+            fps=int(analysis_fps),
+            rtsp_url=analysis_rtsp_url,
+            mapping="[analysis]",
+        )
+    else:
+        command += _encoder_output(
+            encoder=encoder,
+            bitrate=bitrate,
+            keyframe_interval=keyframe_interval,
+            fps=fps,
+            rtsp_url=rtsp_url,
+        )
     return command
 
 
@@ -132,6 +193,12 @@ def run(args: argparse.Namespace) -> int:
         bitrate=args.bitrate,
         keyframe_interval=args.keyframe_interval,
         rtsp_url=args.rtsp_url,
+        analysis_rtsp_url=args.analysis_rtsp_url,
+        analysis_width=args.analysis_width,
+        analysis_height=args.analysis_height,
+        analysis_fps=args.analysis_fps,
+        analysis_bitrate=args.analysis_bitrate,
+        analysis_keyframe_interval=args.analysis_keyframe_interval,
     )
     encoder = subprocess.Popen(command, stdin=subprocess.PIPE)
     stopping = False
@@ -183,6 +250,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--keyframe-interval", type=int, required=True)
     result.add_argument("--ffmpeg-binary", required=True)
     result.add_argument("--rtsp-url", required=True)
+    result.add_argument("--analysis-rtsp-url")
+    result.add_argument("--analysis-width", type=int)
+    result.add_argument("--analysis-height", type=int)
+    result.add_argument("--analysis-fps", type=int)
+    result.add_argument("--analysis-bitrate")
+    result.add_argument("--analysis-keyframe-interval", type=int)
     return result
 
 

@@ -6,9 +6,9 @@
   <meta name="theme-color" content="#f5f7f7">
   <title>MOMO Camera Hub</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='10' y='10' width='34' height='34' rx='7' fill='none' stroke='%23087f8c' stroke-width='8'/%3E%3Cpath d='M40 40h14v14H40z' fill='%2317a673'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20260812-1">
+  <link rel="stylesheet" href="/styles.css?v=20260812-vision-overlay">
   <script defer src="/vendor/lucide.min.js?v=0.468.0"></script>
-  <script defer src="/app.js?v=20260812-action-video-link"></script>
+  <script defer src="/app.js?v=20260812-vision-overlay-v3"></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,12 +21,16 @@
       <span class="status-item"><span class="status-label">画面</span><strong id="formatState">--</strong></span>
       <span class="status-item"><span class="status-label">磁盘</span><strong id="diskState">--</strong></span>
     </div>
-    <a id="controlLink" class="control-link" href="http://localhost:8110/" target="_blank" rel="noreferrer">机械臂控制台</a>
+    <a id="controlLink" class="control-link" href="http://localhost:8010/web/" target="_blank" rel="noreferrer">机械臂控制台</a>
   </header>
 
   <main>
     <section class="monitor" aria-label="实时画面">
       <div class="monitor-toolbar">
+        <button id="resetVisionTargetButton" class="target-reset-button" type="button" title="重置视觉主体">
+          <i data-lucide="scan-line" aria-hidden="true"></i>
+          <span>重置主体</span>
+        </button>
         <label class="camera-picker" for="cameraSelect">
           <i data-lucide="video" aria-hidden="true"></i>
           <span>摄像头</span>
@@ -40,12 +44,25 @@
       </div>
       <div class="video-shell">
         <iframe id="liveFrame" title="机械臂摄像头实时画面" allow="autoplay; fullscreen; picture-in-picture"></iframe>
+        <svg id="visionOverlay" class="vision-overlay" aria-label="视觉目标选择和状态叠加层"></svg>
         <div id="videoOffline" class="video-offline" hidden>
           <span class="offline-icon" aria-hidden="true"></span>
           <strong>摄像头暂时离线</strong>
           <span id="offlineMessage">正在等待重新连接</span>
         </div>
         <span class="live-indicator"><span></span>LIVE</span>
+        <div id="visionTelemetry" class="vision-telemetry" aria-live="polite">
+          <span class="vision-service"><span id="visionDot" class="vision-dot"></span><strong id="visionState">视觉连接中</strong></span>
+          <span id="visionTargetState">目标 --</span>
+          <span id="visionFrameAgeState">帧龄 --</span>
+          <span id="visionLatencyState">处理 --</span>
+          <span id="visionDroppedState">丢帧 --</span>
+          <span id="victorySnapshotTelemetry" class="victory-snapshot" hidden>
+            <i data-lucide="hand" aria-hidden="true"></i>
+            <strong id="victorySnapshotState">Victory 拍照未启用</strong>
+            <span id="victorySnapshotLast"></span>
+          </span>
+        </div>
       </div>
 
       <div class="capture-controls">

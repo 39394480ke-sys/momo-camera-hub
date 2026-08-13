@@ -53,6 +53,20 @@ def service(tmp_path: Path) -> CameraHubService:
     return CameraHubService(config, MediaStore(config.storage.root), FakeRunner())
 
 
+def test_status_exposes_analysis_stream_without_changing_primary_media_stream(service: CameraHubService) -> None:
+    status = service.status()
+
+    assert status["stream"]["rtsp_url"] == "rtsp://127.0.0.1:8554/armcam"
+    assert status["stream"]["main_online"] is True
+    assert status["stream"]["media_server_running"] is True
+    assert status["stream"]["media_server_restarts"] == 0
+    assert status["stream"]["analysis_rtsp_url"] == "rtsp://127.0.0.1:8554/armcam-analysis"
+    assert status["stream"]["analysis_width"] == 640
+    assert status["stream"]["analysis_height"] == 360
+    assert status["stream"]["analysis_fps"] == 30
+    assert status["stream"]["analysis_online"] is True
+
+
 @pytest.mark.asyncio
 async def test_snapshot_is_available_during_recording(service: CameraHubService) -> None:
     recording = await service.start_recording()
